@@ -29,8 +29,12 @@ describe("RssNewsSource", () => {
       }))
     );
 
-    const docs = await new RssNewsSource().collect(job);
-    expect(docs).toHaveLength(1);
-    expect(docs[0]).toMatchObject({ title: "Bitcoin rally", topic: "BTC", sourceName: "Example" });
+    const result = await new RssNewsSource().collect(job);
+    expect(result.documents).toHaveLength(1);
+    expect(result.documents?.[0]).toMatchObject({
+      title: "Bitcoin rally",
+      topic: "BTC",
+      sourceName: "Example",
+    });
   });
 });

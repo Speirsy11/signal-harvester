@@ -1,6 +1,13 @@
-import type { SourceAdapter } from "./SourceAdapter";
-import { RssNewsSource } from "./RssNewsSource";
+import type { Repository } from "../db/repository";
 
-export function createAdapters(): Map<string, SourceAdapter> {
-  return new Map([["news-rss", new RssNewsSource()]]);
+import { FinancialApiSource } from "./FinancialApiSource";
+import { RssNewsSource } from "./RssNewsSource";
+import type { SourceAdapter } from "./SourceAdapter";
+
+export function createAdapters(repository: Repository): Map<string, SourceAdapter> {
+  const adapters: Array<[string, SourceAdapter]> = [
+    ["news-rss", new RssNewsSource()],
+    ["financial-api", new FinancialApiSource(repository)],
+  ];
+  return new Map(adapters);
 }

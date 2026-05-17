@@ -1,6 +1,6 @@
 import { XMLParser } from "fast-xml-parser";
 
-import type { CollectionJob, HarvestedDocument } from "../types";
+import type { CollectionJob, HarvestResult, HarvestedDocument } from "../types";
 
 import type { SourceAdapter } from "./SourceAdapter";
 
@@ -33,7 +33,7 @@ export class RssNewsSource implements SourceAdapter {
   readonly kind = "news-rss";
   private parser = new XMLParser({ ignoreAttributes: false, removeNSPrefix: true });
 
-  async collect(job: CollectionJob): Promise<HarvestedDocument[]> {
+  async collect(job: CollectionJob): Promise<HarvestResult> {
     const config = job.config as RssFeedConfig;
     const feeds = config.feeds ?? [];
     const documents: HarvestedDocument[] = [];
@@ -66,6 +66,6 @@ export class RssNewsSource implements SourceAdapter {
       }
     }
 
-    return documents;
+    return { documents };
   }
 }

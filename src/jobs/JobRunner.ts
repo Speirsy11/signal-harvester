@@ -15,10 +15,18 @@ export class JobRunner {
 
     await this.repository.markJobRunning(job.id);
     try {
-      const docs = await adapter.collect(job);
-      const inserted = await this.repository.storeDocuments(docs);
-      await this.repository.markJobFinished(job.id, inserted);
-      return { fetched: docs.length, inserted };
+      const result = await adapter.collect(job);
+      const documents = result.documents ?? [];
+      const marketData = result.marketData ?? [];
+      const insertedDocuments = await this.repository.storeDocuments(documents);
+      const insertedMarketData = await this.repository.storeMarketData(marketData);
+      await this.repository.markJobFinished(job.id, insertedDocuments + insertedMarketData);
+      return {
+        fetched: documents.length + marketData.length,
+        inserted: insertedDocuments + insertedMarketData,
+        documents: { fetched: documents.length, inserted: insertedDocuments },
+        marketData: { fetched: marketData.length, inserted: insertedMarketData },
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await this.repository.markJobFailed(job.id, message);

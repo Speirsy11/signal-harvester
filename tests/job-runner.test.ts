@@ -45,10 +45,11 @@ describe("JobRunner", () => {
       getJob: vi.fn().mockResolvedValue(job),
       markJobRunning: vi.fn().mockResolvedValue(undefined),
       storeDocuments: vi.fn().mockResolvedValue(1),
+      storeMarketData: vi.fn().mockResolvedValue(0),
       markJobFinished: vi.fn().mockResolvedValue(undefined),
       markJobFailed: vi.fn().mockResolvedValue(undefined),
     };
-    const adapter = { collect: vi.fn().mockResolvedValue([doc]) };
+    const adapter = { collect: vi.fn().mockResolvedValue({ documents: [doc] }) };
 
     const runner = new JobRunner(repository as never, new Map([["news-rss", adapter as never]]));
     const result = await runner.run(job.id);
@@ -56,9 +57,15 @@ describe("JobRunner", () => {
     expect(repository.markJobRunning).toHaveBeenCalledWith(job.id);
     expect(adapter.collect).toHaveBeenCalledWith(job);
     expect(repository.storeDocuments).toHaveBeenCalledWith([doc]);
+    expect(repository.storeMarketData).toHaveBeenCalledWith([]);
     expect(repository.markJobFinished).toHaveBeenCalledWith(job.id, 1);
     expect(repository.markJobFailed).not.toHaveBeenCalled();
-    expect(result).toEqual({ fetched: 1, inserted: 1 });
+    expect(result).toEqual({
+      fetched: 1,
+      inserted: 1,
+      documents: { fetched: 1, inserted: 1 },
+      marketData: { fetched: 0, inserted: 0 },
+    });
   });
 
   it("marks a job failed when collection throws", async () => {
@@ -67,6 +74,7 @@ describe("JobRunner", () => {
       getJob: vi.fn().mockResolvedValue(job),
       markJobRunning: vi.fn().mockResolvedValue(undefined),
       storeDocuments: vi.fn(),
+      storeMarketData: vi.fn(),
       markJobFinished: vi.fn(),
       markJobFailed: vi.fn().mockResolvedValue(undefined),
     };

@@ -20,6 +20,19 @@ export async function ensureSchema(sql: Sql) {
   `;
 
   await sql`
+    CREATE TABLE IF NOT EXISTS provider_credentials (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      label TEXT NOT NULL,
+      api_key TEXT,
+      api_secret TEXT,
+      extra JSONB NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+
+  await sql`
     CREATE TABLE IF NOT EXISTS documents (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       external_id TEXT NOT NULL,
@@ -39,7 +52,28 @@ export async function ensureSchema(sql: Sql) {
     )
   `;
 
+  await sql`
+    CREATE TABLE IF NOT EXISTS market_data_points (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      provider TEXT NOT NULL,
+      source_name TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      interval TEXT NOT NULL,
+      timestamp TIMESTAMPTZ NOT NULL,
+      open DOUBLE PRECISION NOT NULL,
+      high DOUBLE PRECISION NOT NULL,
+      low DOUBLE PRECISION NOT NULL,
+      close DOUBLE PRECISION NOT NULL,
+      volume DOUBLE PRECISION,
+      raw JSONB NOT NULL DEFAULT '{}',
+      collected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (provider, symbol, interval, timestamp)
+    )
+  `;
+
   await sql`CREATE INDEX IF NOT EXISTS idx_documents_topic_time ON documents(topic, published_at DESC NULLS LAST, collected_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_documents_sentiment ON documents(topic, sentiment_label, collected_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_collection_jobs_topic ON collection_jobs(topic, source_kind)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_provider_credentials_provider ON provider_credentials(provider)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_market_data_symbol_time ON market_data_points(symbol, interval, timestamp DESC)`;
 }

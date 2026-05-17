@@ -13,7 +13,7 @@ export async function buildServer(sql: Sql) {
   await ensureSchema(sql);
   const repository = new Repository(sql);
   await repository.seedDefaults();
-  const runner = new JobRunner(repository, createAdapters());
+  const runner = new JobRunner(repository, createAdapters(repository));
   const app = Fastify({ logger: true });
   await app.register(cors, { origin: true });
 
@@ -41,12 +41,68 @@ export async function buildServer(sql: Sql) {
     return runner.run(params.id);
   });
 
+  app.get("/api/credentials", async () => repository.listCredentials());
+
+  app.post("/api/credentials", async (request, reply) => {
+    const schema = z.object({
+      id: z.string().min(1).optional(),
+      provider: z.string().min(1),
+      label: z.string().min(1),
+      apiKey: z.string().min(1).optional(),
+      apiSecret: z.string().min(1).optional(),
+      extra: z.record(z.unknown()).optional(),
+    });
+    const credential = await repository.upsertCredential(schema.parse(request.body));
+    return reply.code(201).send(credential);
+  });
+
+  app.post("/api/financial-jobs", async (request, reply) => {
+    const schema = z.object({
+      id: z.string().min(1).optional(),
+      name: z.string().min(1),
+      topic: z.string().min(1),
+      provider: z.enum(["alpha-vantage", "binance"]),
+      credentialId: z.string().min(1).optional(),
+      symbols: z.array(z.string().min(1)).min(1),
+      interval: z.enum(["1m", "5m", "15m", "1h", "1d"]),
+      scheduleMs: z.number().int().positive().nullable().optional(),
+    });
+    const input = schema.parse(request.body);
+    const job = await repository.createJob({
+      id: input.id,
+      name: input.name,
+      topic: input.topic,
+      sourceKind: "financial-api",
+      scheduleMs: input.scheduleMs,
+      config: {
+        provider: input.provider,
+        credentialId: input.credentialId,
+        symbols: input.symbols,
+        interval: input.interval,
+      },
+    });
+    return reply.code(201).send(job);
+  });
+
   app.get("/api/documents", async (request) => {
     const query = z
       .object({ topic: z.string().optional(), limit: z.coerce.number().int().positive().optional() })
       .parse(request.query);
     return repository.listDocuments(query);
   });
+
+  app.get("/api/market-data", async (request) => {
+    const query = z
+      .object({
+        symbol: z.string().optional(),
+        interval: z.string().optional(),
+        limit: z.coerce.number().int().positive().optional(),
+      })
+      .parse(request.query);
+    return repository.listMarketData(query);
+  });
+
+  app.get("/api/market-data/summary", async () => repository.marketDataSummary());
 
   app.get("/api/sentiment/summary", async (request) => {
     const query = z

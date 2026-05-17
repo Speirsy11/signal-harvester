@@ -1,14 +1,17 @@
-# Signal Harvester
+# Data Harvester / Signal Harvester
 
-Reusable data collection service for market, news, and sentiment datasets.
+Reusable data collection service for market, news, sentiment, and future signal datasets.
+
+The original `signal-harvester` slice is now one collector type: RSS/news sentiment. Financial market data is another collector type, configured through the same jobs UI/API.
 
 It gives you:
 
-- source adapters for RSS/news now, with market/API adapters designed in
+- pluggable source adapters: RSS/news sentiment and financial APIs today
 - persisted collection jobs
-- versioned collected documents
-- simple sentiment scoring
-- a clean web UI to inspect jobs/data and start new collection jobs
+- local provider credential storage with masked secrets in the UI/API responses
+- versioned collected documents for news/sentiment data
+- OHLCV-style market data storage for financial datasets
+- a clean web UI to add API keys, create jobs, inspect data, and run jobs
 - API endpoints that trading systems can consume without knowing source details
 
 ## Run locally
@@ -21,7 +24,9 @@ pnpm docker:up
 
 Open <http://localhost:3010>.
 
-## First job
+## Collector types
+
+### RSS/news sentiment
 
 The app seeds a BTC news job using Google News, Cointelegraph, and CoinDesk RSS feeds. Run it from the UI or API:
 
@@ -29,10 +34,59 @@ The app seeds a BTC news job using Google News, Cointelegraph, and CoinDesk RSS 
 curl -X POST http://localhost:3010/api/jobs/btc-news/run
 ```
 
+### Financial market data
+
+Use the **Provider setup** tab to add API credentials, then use **Market data** to create a financial collection job.
+
+Supported now:
+
+- `alpha-vantage` — requires an API key saved as a credential, default id `alpha-vantage`
+- `binance` — public kline/OHLCV collection works without a key
+
+Example API flow:
+
+```bash
+# Save an Alpha Vantage API key locally. Responses only expose masked secrets.
+curl -X POST http://localhost:3010/api/credentials \
+  -H 'content-type: application/json' \
+  -d '{
+    "id": "alpha-vantage",
+    "provider": "alpha-vantage",
+    "label": "Alpha Vantage",
+    "apiKey": "YOUR_KEY"
+  }'
+
+# Create a BTC/USD 1m financial data job.
+curl -X POST http://localhost:3010/api/financial-jobs \
+  -H 'content-type: application/json' \
+  -d '{
+    "id": "btc-alpha-vantage-1m",
+    "name": "BTC/USD 1m market data",
+    "topic": "BTC",
+    "provider": "alpha-vantage",
+    "credentialId": "alpha-vantage",
+    "symbols": ["BTCUSD"],
+    "interval": "1m"
+  }'
+
+# Run it.
+curl -X POST http://localhost:3010/api/jobs/btc-alpha-vantage-1m/run
+```
+
 ## API
 
 - `GET /api/jobs`
 - `POST /api/jobs`
 - `POST /api/jobs/:id/run`
+- `GET /api/credentials`
+- `POST /api/credentials`
+- `POST /api/financial-jobs`
 - `GET /api/documents?topic=BTC&limit=50`
+- `GET /api/market-data?symbol=BTCUSD&interval=1m&limit=100`
+- `GET /api/market-data/summary`
 - `GET /api/sentiment/summary?topic=BTC&windowHours=24`
+- `GET /api/context/events?topic=BTC`
+
+## Notes on secrets
+
+Provider keys are intended for a local/self-hosted instance. They are stored in Postgres so the service can run jobs without editing environment variables. API/UI reads return masked values only; do not commit `.env` or database dumps containing real credentials.

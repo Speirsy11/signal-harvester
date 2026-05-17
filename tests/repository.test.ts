@@ -12,7 +12,7 @@ describe.skipIf(!databaseUrl)("Repository", () => {
 
   beforeAll(async () => {
     await ensureSchema(sql);
-    await sql`TRUNCATE documents, collection_jobs`;
+    await sql`TRUNCATE market_data_points, provider_credentials, documents, collection_jobs`;
   });
 
   afterAll(async () => {

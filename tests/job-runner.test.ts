@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { JobRunner } from "../src/jobs/JobRunner";
-import type { CollectionJob, CollectedDocument } from "../src/types";
+import type { CollectionJob, HarvestedDocument } from "../src/types";
 
 function makeJob(overrides: Partial<CollectionJob> = {}): CollectionJob {
   return {
@@ -14,18 +14,17 @@ function makeJob(overrides: Partial<CollectionJob> = {}): CollectionJob {
     scheduleMs: null,
     status: "idle",
     lastRunAt: null,
-    lastSuccessAt: null,
+    nextRunAt: null,
     lastError: null,
-    totalDocuments: 0,
     createdAt: new Date("2026-01-01T00:00:00Z"),
     updatedAt: new Date("2026-01-01T00:00:00Z"),
     ...overrides,
   };
 }
 
-function makeDoc(): CollectedDocument {
+function makeDoc(): HarvestedDocument {
   return {
-    id: "doc-1",
+    externalId: "doc-1",
     sourceName: "test-rss",
     sourceKind: "news-rss",
     topic: "BTC",
@@ -33,9 +32,7 @@ function makeDoc(): CollectedDocument {
     title: "Bitcoin rallies after ETF inflows",
     summary: "BTC momentum improved after institutional demand increased.",
     publishedAt: new Date("2026-01-01T00:05:00Z"),
-    collectedAt: new Date("2026-01-01T00:06:00Z"),
-    sentimentScore: 0.4,
-    sentimentLabel: "positive",
+    author: null,
     raw: {},
   };
 }

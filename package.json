@@ -1,0 +1,41 @@
+{
+  "name": "signal-harvester",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A reusable data collection service for market, news, and sentiment datasets.",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsup src/index.ts --format esm",
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src tests",
+    "docker:up": "docker compose up -d --build",
+    "docker:logs": "docker compose logs -f app",
+    "docker:down": "docker compose down"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.1.0",
+    "fast-xml-parser": "^5.3.2",
+    "fastify": "^5.2.1",
+    "postgres": "^3.4.5",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^20.17.12",
+    "eslint": "^9.39.1",
+    "testcontainers": "^11.13.0",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.48.0",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

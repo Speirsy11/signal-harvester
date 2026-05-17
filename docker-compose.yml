@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: signal-postgres
+    environment:
+      POSTGRES_USER: signal
+      POSTGRES_PASSWORD: signal
+      POSTGRES_DB: signal_harvester
+    ports:
+      - "5544:5432"
+    volumes:
+      - signal_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U signal -d signal_harvester"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  app:
+    build: .
+    container_name: signal-harvester
+    environment:
+      DATABASE_URL: postgresql://signal:signal@postgres:5432/signal_harvester
+      PORT: 3010
+    ports:
+      - "3010:3010"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  signal_postgres_data:

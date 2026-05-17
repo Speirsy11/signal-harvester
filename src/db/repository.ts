@@ -297,12 +297,22 @@ export class Repository {
     return rows.map(rowToDocument);
   }
 
-  async listMarketData(options: { symbol?: string; interval?: string; limit?: number }) {
-    const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
+  async listMarketData(options: {
+    provider?: string;
+    symbol?: string;
+    interval?: string;
+    from?: Date;
+    to?: Date;
+    limit?: number;
+  }) {
+    const limit = Math.min(Math.max(options.limit ?? 100, 1), 1000);
     const rows = await this.sql`
       SELECT * FROM market_data_points
-      WHERE (${options.symbol ?? null}::text IS NULL OR symbol = ${options.symbol ?? null})
+      WHERE (${options.provider ?? null}::text IS NULL OR provider = ${options.provider ?? null})
+        AND (${options.symbol ?? null}::text IS NULL OR symbol = ${options.symbol ?? null})
         AND (${options.interval ?? null}::text IS NULL OR interval = ${options.interval ?? null})
+        AND (${options.from ?? null}::timestamptz IS NULL OR timestamp >= ${options.from ?? null})
+        AND (${options.to ?? null}::timestamptz IS NULL OR timestamp <= ${options.to ?? null})
       ORDER BY timestamp DESC
       LIMIT ${limit}
     `;

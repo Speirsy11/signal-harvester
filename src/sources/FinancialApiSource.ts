@@ -9,6 +9,9 @@ interface FinancialApiConfig {
   symbols?: string[];
   interval?: MarketDataInterval | string;
   outputsize?: "compact" | "full";
+  startTime?: string;
+  endTime?: string;
+  limit?: number;
 }
 
 const alphaVantageIntervals: Record<string, string> = {
@@ -113,7 +116,9 @@ export class FinancialApiSource implements SourceAdapter {
       const url = new URL("https://api.binance.com/api/v3/klines");
       url.searchParams.set("symbol", symbol.replace("/", ""));
       url.searchParams.set("interval", String(interval));
-      url.searchParams.set("limit", "500");
+      url.searchParams.set("limit", String(Math.min(Math.max(config.limit ?? 500, 1), 1000)));
+      if (config.startTime) url.searchParams.set("startTime", String(new Date(config.startTime).getTime()));
+      if (config.endTime) url.searchParams.set("endTime", String(new Date(config.endTime).getTime()));
       const response = await fetch(url, { headers: { "user-agent": "SignalHarvester/0.1" } });
       if (!response.ok) throw new Error(`Binance fetch failed for ${symbol}: ${response.status}`);
       const rows = (await response.json()) as unknown[][];

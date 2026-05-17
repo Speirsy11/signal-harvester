@@ -94,12 +94,22 @@ export async function buildServer(sql: Sql) {
   app.get("/api/market-data", async (request) => {
     const query = z
       .object({
+        provider: z.string().optional(),
         symbol: z.string().optional(),
         interval: z.string().optional(),
+        from: z.string().datetime().optional(),
+        to: z.string().datetime().optional(),
         limit: z.coerce.number().int().positive().optional(),
       })
       .parse(request.query);
-    return repository.listMarketData(query);
+    return repository.listMarketData({
+      provider: query.provider,
+      symbol: query.symbol,
+      interval: query.interval,
+      from: query.from ? new Date(query.from) : undefined,
+      to: query.to ? new Date(query.to) : undefined,
+      limit: query.limit,
+    });
   });
 
   app.get("/api/market-data/summary", async () => repository.marketDataSummary());

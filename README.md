@@ -43,6 +43,14 @@ Supported now:
 - `alpha-vantage` — requires an API key saved as a credential, default id `alpha-vantage`
 - `binance` — public kline/OHLCV collection works without a key
 
+Signal Harvester stores/collects financial candles at `1m` only. Downstream apps should roll those candles up locally for wider intervals.
+
+For Binance `1m` jobs, the app also runs a throttled historical backfill loop. Live jobs keep the newest minute current, while backfill batches walk from Binance's first available 1m candle toward now. Tune it with:
+
+- `MARKET_BACKFILL_ENABLED=0` to disable the loop.
+- `MARKET_BACKFILL_INTERVAL_MS=300000` to control how often a batch runs; default is 5 minutes.
+- `MARKET_BACKFILL_BATCH_SIZE=1000` to control candles per symbol per batch; max is Binance's 1000 kline limit.
+
 Example API flow:
 
 ```bash
@@ -84,6 +92,9 @@ curl -X POST http://localhost:3010/api/jobs/btc-alpha-vantage-1m/run
 - `GET /api/documents?topic=BTC&limit=50`
 - `GET /api/market-data?symbol=BTCUSD&interval=1m&limit=100`
 - `GET /api/market-data/summary`
+- `GET /api/market-data/coverage`
+- `GET /api/market-data/backfills`
+- `POST /api/market-data/backfills/run`
 - `GET /api/sentiment/summary?topic=BTC&windowHours=24`
 - `GET /api/context/events?topic=BTC`
 

@@ -2,7 +2,7 @@ export type SourceKind = "news-rss" | "financial-api" | "web-scrape";
 export type JobStatus = "idle" | "running" | "failed";
 export type SentimentLabel = "positive" | "neutral" | "negative";
 export type FinancialProvider = "alpha-vantage" | "binance";
-export type MarketDataInterval = "1m" | "5m" | "15m" | "1h" | "1d";
+export type MarketDataInterval = "1m";
 
 export interface CollectionJob {
   id: string;
@@ -73,6 +73,24 @@ export interface MarketDataPoint {
 export interface StoredMarketDataPoint extends MarketDataPoint {
   id: string;
   collectedAt: Date;
+}
+
+export interface MarketBackfillState {
+  provider: string;
+  symbol: string;
+  interval: MarketDataInterval | string;
+  status: "idle" | "running" | "complete" | "failed";
+  startTime: Date | null;
+  nextStartTime: Date | null;
+  latestAvailableTime: Date | null;
+  lastBatchAt: Date | null;
+  lastFetched: number;
+  lastInserted: number;
+  totalFetched: number;
+  totalInserted: number;
+  lastError: string | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface HarvestResult {

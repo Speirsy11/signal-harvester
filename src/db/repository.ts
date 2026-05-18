@@ -7,6 +7,7 @@ import type {
   CollectionJob,
   FinancialProvider,
   HarvestedDocument,
+  MarketBackfillState,
   MarketDataPoint,
   ProviderCredential,
   PublicProviderCredential,
@@ -102,6 +103,26 @@ function rowToMarketData(row: any): StoredMarketDataPoint {
   };
 }
 
+function rowToMarketBackfill(row: any): MarketBackfillState {
+  return {
+    provider: row.provider,
+    symbol: row.symbol,
+    interval: row.interval,
+    status: row.status,
+    startTime: row.start_time,
+    nextStartTime: row.next_start_time,
+    latestAvailableTime: row.latest_available_time,
+    lastBatchAt: row.last_batch_at,
+    lastFetched: Number(row.last_fetched ?? 0),
+    lastInserted: Number(row.last_inserted ?? 0),
+    totalFetched: Number(row.total_fetched ?? 0),
+    totalInserted: Number(row.total_inserted ?? 0),
+    lastError: row.last_error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 export function stableId(input: string) {
   return crypto.createHash("sha256").update(input).digest("hex");
 }
@@ -131,23 +152,10 @@ export class Repository {
       });
     }
 
-    const marketJob = await this.getJob("btc-alpha-vantage-1m");
-    if (!marketJob) {
-      await this.createJob({
-        id: "btc-alpha-vantage-1m",
-        name: "BTC/USD 1m market data",
-        topic: "BTC",
-        sourceKind: "financial-api",
-        scheduleMs: null,
-        config: {
-          provider: "alpha-vantage",
-          credentialId: "alpha-vantage",
-          symbols: ["BTCUSD"],
-          interval: "1m",
-          outputsize: "compact",
-        },
-      });
-    }
+    // Financial collection is configured by downstream clients, such as the
+    // trading-bot-platform worker. Avoid seeding demo market jobs here because
+    // stale symbols/jobs make the Signal Harvester UI look like it is collecting
+    // assets that are no longer active.
   }
 
   async listJobs() {
@@ -328,6 +336,105 @@ export class Repository {
       FROM market_data_points
     `;
     return rows[0];
+  }
+
+  async listMarketCoverage() {
+    const rows = await this.sql`
+      SELECT
+        provider,
+        symbol,
+        interval,
+        COUNT(*)::int AS points,
+        MIN(timestamp) AS earliest_timestamp,
+        MAX(timestamp) AS latest_timestamp,
+        MAX(collected_at) AS last_collected_at
+      FROM market_data_points
+      GROUP BY provider, symbol, interval
+      ORDER BY symbol, interval, provider
+    `;
+    return rows;
+  }
+
+  async listMarketBackfillTargets() {
+    const rows = await this.sql`
+      SELECT DISTINCT config->>'provider' AS provider, symbols.symbol, config->>'interval' AS interval
+      FROM collection_jobs,
+        LATERAL jsonb_array_elements_text(config->'symbols') AS symbols(symbol)
+      WHERE source_kind = 'financial-api'
+        AND enabled = true
+        AND config->>'provider' = 'binance'
+        AND config->>'interval' = '1m'
+      ORDER BY symbol
+    `;
+    return rows.map((row) => ({ provider: row.provider, symbol: row.symbol, interval: row.interval }));
+  }
+
+  async getMarketBackfillState(provider: string, symbol: string, interval: string) {
+    const rows = await this.sql`
+      SELECT * FROM market_data_backfills
+      WHERE provider = ${provider} AND symbol = ${symbol} AND interval = ${interval}
+    `;
+    return rows[0] ? rowToMarketBackfill(rows[0]) : null;
+  }
+
+  async upsertMarketBackfillState(input: {
+    provider: string;
+    symbol: string;
+    interval: string;
+    status: MarketBackfillState["status"];
+    startTime?: Date | null;
+    nextStartTime?: Date | null;
+    latestAvailableTime?: Date | null;
+    lastBatchAt?: Date | null;
+    lastFetched?: number;
+    lastInserted?: number;
+    totalFetchedDelta?: number;
+    totalInsertedDelta?: number;
+    lastError?: string | null;
+  }) {
+    const rows = await this.sql`
+      INSERT INTO market_data_backfills (
+        provider, symbol, interval, status, start_time, next_start_time, latest_available_time,
+        last_batch_at, last_fetched, last_inserted, total_fetched, total_inserted, last_error
+      ) VALUES (
+        ${input.provider}, ${input.symbol}, ${input.interval}, ${input.status}, ${input.startTime ?? null},
+        ${input.nextStartTime ?? null}, ${input.latestAvailableTime ?? null}, ${input.lastBatchAt ?? null},
+        ${input.lastFetched ?? 0}, ${input.lastInserted ?? 0}, ${input.totalFetchedDelta ?? 0},
+        ${input.totalInsertedDelta ?? 0}, ${input.lastError ?? null}
+      )
+      ON CONFLICT (provider, symbol, interval) DO UPDATE SET
+        status = EXCLUDED.status,
+        start_time = COALESCE(EXCLUDED.start_time, market_data_backfills.start_time),
+        next_start_time = COALESCE(EXCLUDED.next_start_time, market_data_backfills.next_start_time),
+        latest_available_time = COALESCE(EXCLUDED.latest_available_time, market_data_backfills.latest_available_time),
+        last_batch_at = COALESCE(EXCLUDED.last_batch_at, market_data_backfills.last_batch_at),
+        last_fetched = EXCLUDED.last_fetched,
+        last_inserted = EXCLUDED.last_inserted,
+        total_fetched = market_data_backfills.total_fetched + EXCLUDED.total_fetched,
+        total_inserted = market_data_backfills.total_inserted + EXCLUDED.total_inserted,
+        last_error = EXCLUDED.last_error,
+        updated_at = NOW()
+      RETURNING *
+    `;
+    return rowToMarketBackfill(rows[0]);
+  }
+
+  async markOldestMarketBackfillFailed(error: string) {
+    await this.sql`
+      UPDATE market_data_backfills
+      SET status = 'failed', last_error = ${error}, updated_at = NOW()
+      WHERE (provider, symbol, interval) IN (
+        SELECT provider, symbol, interval FROM market_data_backfills
+        WHERE status = 'running'
+        ORDER BY updated_at ASC
+        LIMIT 1
+      )
+    `;
+  }
+
+  async listMarketBackfills() {
+    const rows = await this.sql`SELECT * FROM market_data_backfills ORDER BY symbol, interval, provider`;
+    return rows.map(rowToMarketBackfill);
   }
 
   async sentimentSummary(options: { topic: string; windowHours: number }) {

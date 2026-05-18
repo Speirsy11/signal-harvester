@@ -6,6 +6,7 @@ import { z } from "zod";
 import { Repository } from "../db/repository";
 import { ensureSchema } from "../db/schema";
 import { JobRunner } from "../jobs/JobRunner";
+import { startMarketBackfill } from "../marketBackfill";
 import { createAdapters } from "../sources";
 import { html } from "../ui/html";
 
@@ -14,7 +15,9 @@ export async function buildServer(sql: Sql) {
   const repository = new Repository(sql);
   await repository.seedDefaults();
   const runner = new JobRunner(repository, createAdapters(repository));
+  const backfill = startMarketBackfill(repository);
   const app = Fastify({ logger: true });
+  app.addHook("onClose", async () => backfill.close());
   await app.register(cors, { origin: true });
 
   app.get("/health", async () => ({ ok: true }));
@@ -64,10 +67,18 @@ export async function buildServer(sql: Sql) {
       provider: z.enum(["alpha-vantage", "binance"]),
       credentialId: z.string().min(1).optional(),
       symbols: z.array(z.string().min(1)).min(1),
-      interval: z.enum(["1m", "5m", "15m", "1h", "1d"]),
+      interval: z.literal("1m"),
       scheduleMs: z.number().int().positive().nullable().optional(),
     });
-    const input = schema.parse(request.body);
+    const parsed = schema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: "financial_job_validation_failed",
+        message: "Signal Harvester collects 1m market-data candles only; derive higher intervals locally.",
+        issues: parsed.error.issues,
+      });
+    }
+    const input = parsed.data;
     const job = await repository.createJob({
       id: input.id,
       name: input.name,
@@ -113,6 +124,13 @@ export async function buildServer(sql: Sql) {
   });
 
   app.get("/api/market-data/summary", async () => repository.marketDataSummary());
+  app.get("/api/market-data/coverage", async () => repository.listMarketCoverage());
+  app.get("/api/market-data/backfills", async () => repository.listMarketBackfills());
+
+  app.post("/api/market-data/backfills/run", async () => {
+    await backfill.runOnce();
+    return { ok: true };
+  });
 
   app.get("/api/sentiment/summary", async (request) => {
     const query = z

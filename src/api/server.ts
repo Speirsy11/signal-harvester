@@ -84,7 +84,7 @@ export async function buildServer(sql: Sql) {
     if (!parsed.success) {
       return reply.code(400).send({
         error: "financial_job_validation_failed",
-        message: "Signal Harvester collects 1m market-data candles only; derive higher intervals locally.",
+        message: "Signal Harvester collects 1m market-data candles only; higher intervals are derived automatically.",
         issues: parsed.error.issues,
       });
     }
@@ -138,6 +138,11 @@ export async function buildServer(sql: Sql) {
   app.get("/api/market-data/coverage", async () => repository.listMarketCoverage());
   app.get("/api/market-data/backfills", async () => repository.listMarketBackfills());
   app.get("/api/market-data/backfills/metrics", async () => backfill.getMetrics());
+
+  app.post("/api/market-data/rollups/run", async (request) => {
+    const body = z.object({ lookbackDays: z.number().int().positive().optional() }).optional().parse(request.body);
+    return repository.refreshClosedMarketRollups({ lookbackDays: body?.lookbackDays });
+  });
 
   app.post("/api/market-data/backfills/run", async () => {
     await backfill.runOnce();

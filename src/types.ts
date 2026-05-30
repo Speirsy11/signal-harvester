@@ -2,7 +2,7 @@ export type SourceKind = "news-rss" | "financial-api" | "web-scrape";
 export type JobStatus = "idle" | "running" | "failed";
 export type SentimentLabel = "positive" | "neutral" | "negative";
 export type FinancialProvider = "alpha-vantage" | "binance";
-export type MarketDataInterval = "1m";
+export type MarketDataInterval = "1m" | "5m" | "15m" | "1h" | "4h" | "1d" | "1W" | "1M";
 
 export interface CollectionJob {
   id: string;

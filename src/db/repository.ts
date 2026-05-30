@@ -2,6 +2,14 @@ import crypto from "node:crypto";
 
 import type { Sql } from "postgres";
 
+import {
+  buildRollupPoint,
+  closedRollupWindowsBetween,
+  closedRollupWindowsForPoint,
+  ROLLUP_MARKET_INTERVALS,
+  SOURCE_MARKET_INTERVAL,
+  type RollupWindow,
+} from "../marketRollups";
 import { scoreSentiment } from "../sentiment/lexicon";
 import type {
   CollectionJob,
@@ -302,6 +310,15 @@ export class Repository {
   async storeMarketData(points: MarketDataPoint[]) {
     if (points.length === 0) return 0;
 
+    const directRows = await this.insertMarketData(points);
+    await this.storeClosedMarketRollups(points);
+
+    return directRows;
+  }
+
+  private async insertMarketData(points: MarketDataPoint[]) {
+    if (points.length === 0) return 0;
+
     const payload = points.map((point) => ({
       provider: point.provider,
       source_name: point.sourceName,
@@ -350,6 +367,98 @@ export class Repository {
     `;
 
     return rows.length;
+  }
+
+  private async storeClosedMarketRollups(points: MarketDataPoint[]) {
+    const sourcePoints = points.filter((point) => point.interval === SOURCE_MARKET_INTERVAL);
+    if (sourcePoints.length === 0) return 0;
+
+    const groupedWindows = new Map<
+      string,
+      { provider: string; symbol: string; windows: Map<string, RollupWindow> }
+    >();
+
+    for (const point of sourcePoints) {
+      const groupKey = `${point.provider}\0${point.symbol}`;
+      let group = groupedWindows.get(groupKey);
+      if (!group) {
+        group = { provider: point.provider, symbol: point.symbol, windows: new Map() };
+        groupedWindows.set(groupKey, group);
+      }
+
+      for (const window of closedRollupWindowsForPoint(point)) {
+        group.windows.set(`${window.interval}\0${window.start.toISOString()}`, window);
+      }
+    }
+
+    let rollupsStored = 0;
+    for (const group of groupedWindows.values()) {
+      if (group.windows.size === 0) continue;
+      rollupsStored += await this.storeRollupWindows(group.provider, group.symbol, [...group.windows.values()]);
+    }
+
+    return rollupsStored;
+  }
+
+  async refreshClosedMarketRollups(options: { lookbackDays?: number } = {}) {
+    const lookbackDays = Math.min(Math.max(options.lookbackDays ?? 45, 1), 370);
+    const now = new Date();
+    const from = new Date(now.getTime() - lookbackDays * 24 * 60 * 60_000);
+    const targetRows = await this.sql`
+      SELECT DISTINCT provider, symbol
+      FROM market_data_points
+      WHERE interval = ${SOURCE_MARKET_INTERVAL}
+        AND timestamp >= ${from}
+      ORDER BY provider, symbol
+    `;
+
+    let rollupsStored = 0;
+    for (const target of targetRows) {
+      const windows = ROLLUP_MARKET_INTERVALS.flatMap((interval) =>
+        closedRollupWindowsBetween(interval, from, now)
+      );
+      rollupsStored += await this.storeRollupWindows(target.provider, target.symbol, windows);
+    }
+
+    return {
+      targets: targetRows.length,
+      lookbackDays,
+      rollupsStored,
+    };
+  }
+
+  private async storeRollupWindows(provider: string, symbol: string, windows: RollupWindow[]) {
+    if (windows.length === 0) return 0;
+
+    const minStart = new Date(Math.min(...windows.map((window) => window.start.getTime())));
+    const maxEnd = new Date(Math.max(...windows.map((window) => window.end.getTime())));
+
+    const rows = await this.sql`
+      SELECT *
+      FROM market_data_points
+      WHERE provider = ${provider}
+        AND symbol = ${symbol}
+        AND interval = ${SOURCE_MARKET_INTERVAL}
+        AND timestamp >= ${minStart}
+        AND timestamp < ${maxEnd}
+      ORDER BY timestamp ASC
+    `;
+    const storedPoints = rows.map(rowToMarketData);
+    const storedPointsByTimestamp = new Map(storedPoints.map((point) => [point.timestamp.getTime(), point]));
+    const rollups: MarketDataPoint[] = [];
+
+    for (const window of windows) {
+      const bucketPoints: MarketDataPoint[] = [];
+      for (let timestamp = window.start.getTime(); timestamp < window.end.getTime(); timestamp += 60_000) {
+        const point = storedPointsByTimestamp.get(timestamp);
+        if (!point) break;
+        bucketPoints.push(point);
+      }
+      const rollup = buildRollupPoint(window, bucketPoints);
+      if (rollup) rollups.push(rollup);
+    }
+
+    return this.insertMarketData(rollups);
   }
 
   async listDocuments(options: { topic?: string; limit?: number }) {

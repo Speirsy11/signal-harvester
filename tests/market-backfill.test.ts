@@ -123,7 +123,16 @@ describe("market backfill scheduler", () => {
       minIntervalMs: 0,
     });
 
-    await vi.waitFor(() => expect(repo.storeMarketData).toHaveBeenCalled(), { timeout: 1000 });
+    await vi.waitFor(
+      () =>
+        expect(repo.upsertMarketBackfillState).toHaveBeenCalledWith(
+          expect.objectContaining({
+            status: "idle",
+            nextStartTime: cursor,
+          })
+        ),
+      { timeout: 1000 }
+    );
     backfill.close();
 
     expect(repo.upsertMarketBackfillState).toHaveBeenLastCalledWith(

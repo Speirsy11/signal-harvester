@@ -16,6 +16,8 @@ import type {
   StoredMarketDataPoint,
 } from "../types";
 
+const DEFAULT_FINANCIAL_SCHEDULE_MS = 60_000;
+
 function rowToJob(row: any): CollectionJob {
   return {
     id: row.id,
@@ -156,10 +158,36 @@ export class Repository {
     // trading-bot-platform worker. Avoid seeding demo market jobs here because
     // stale symbols/jobs make the Signal Harvester UI look like it is collecting
     // assets that are no longer active.
+    await this.ensureFinancialJobSchedules();
+  }
+
+  async ensureFinancialJobSchedules(defaultScheduleMs = DEFAULT_FINANCIAL_SCHEDULE_MS) {
+    await this.sql`
+      UPDATE collection_jobs
+      SET schedule_ms = ${defaultScheduleMs},
+          next_run_at = COALESCE(next_run_at, NOW()),
+          updated_at = NOW()
+      WHERE source_kind = 'financial-api'
+        AND enabled = true
+        AND schedule_ms IS NULL
+    `;
   }
 
   async listJobs() {
     const rows = await this.sql`SELECT * FROM collection_jobs ORDER BY created_at DESC`;
+    return rows.map(rowToJob);
+  }
+
+  async listDueJobs(limit = 50) {
+    const rows = await this.sql`
+      SELECT * FROM collection_jobs
+      WHERE enabled = true
+        AND schedule_ms IS NOT NULL
+        AND status != 'running'
+        AND (next_run_at IS NULL OR next_run_at <= NOW())
+      ORDER BY COALESCE(next_run_at, created_at) ASC
+      LIMIT ${limit}
+    `;
     return rows.map(rowToJob);
   }
 
@@ -272,29 +300,56 @@ export class Repository {
   }
 
   async storeMarketData(points: MarketDataPoint[]) {
-    let inserted = 0;
-    for (const point of points) {
-      const rows = await this.sql`
-        INSERT INTO market_data_points (
-          provider, source_name, symbol, interval, timestamp, open, high, low, close, volume, raw
-        ) VALUES (
-          ${point.provider}, ${point.sourceName}, ${point.symbol}, ${point.interval}, ${point.timestamp},
-          ${point.open}, ${point.high}, ${point.low}, ${point.close}, ${point.volume}, ${this.sql.json(point.raw as any)}
+    if (points.length === 0) return 0;
+
+    const payload = points.map((point) => ({
+      provider: point.provider,
+      source_name: point.sourceName,
+      symbol: point.symbol,
+      interval: point.interval,
+      timestamp: point.timestamp.toISOString(),
+      open: point.open,
+      high: point.high,
+      low: point.low,
+      close: point.close,
+      volume: point.volume,
+      raw: point.raw,
+    }));
+
+    const rows = await this.sql`
+      WITH input AS (
+        SELECT * FROM jsonb_to_recordset(${this.sql.json(payload as any)}::jsonb) AS point(
+          provider text,
+          source_name text,
+          symbol text,
+          interval text,
+          timestamp timestamptz,
+          open double precision,
+          high double precision,
+          low double precision,
+          close double precision,
+          volume double precision,
+          raw jsonb
         )
-        ON CONFLICT (provider, symbol, interval, timestamp) DO UPDATE SET
-          source_name = EXCLUDED.source_name,
-          open = EXCLUDED.open,
-          high = EXCLUDED.high,
-          low = EXCLUDED.low,
-          close = EXCLUDED.close,
-          volume = EXCLUDED.volume,
-          raw = EXCLUDED.raw,
-          collected_at = NOW()
-        RETURNING id
-      `;
-      if (rows.length > 0) inserted += 1;
-    }
-    return inserted;
+      )
+      INSERT INTO market_data_points (
+        provider, source_name, symbol, interval, timestamp, open, high, low, close, volume, raw
+      )
+      SELECT provider, source_name, symbol, interval, timestamp, open, high, low, close, volume, raw
+      FROM input
+      ON CONFLICT (provider, symbol, interval, timestamp) DO UPDATE SET
+        source_name = EXCLUDED.source_name,
+        open = EXCLUDED.open,
+        high = EXCLUDED.high,
+        low = EXCLUDED.low,
+        close = EXCLUDED.close,
+        volume = EXCLUDED.volume,
+        raw = EXCLUDED.raw,
+        collected_at = NOW()
+      RETURNING id
+    `;
+
+    return rows.length;
   }
 
   async listDocuments(options: { topic?: string; limit?: number }) {
@@ -325,6 +380,48 @@ export class Repository {
       LIMIT ${limit}
     `;
     return rows.map(rowToMarketData);
+  }
+
+  async listLatestMarketDataPerSymbol() {
+    const rows = await this.sql`
+      WITH targets AS (
+        SELECT DISTINCT config->>'provider' AS provider, symbols.symbol, config->>'interval' AS interval
+        FROM collection_jobs,
+          LATERAL jsonb_array_elements_text(config->'symbols') AS symbols(symbol)
+        WHERE source_kind = 'financial-api'
+          AND enabled = true
+          AND config->>'provider' IS NOT NULL
+          AND config->>'interval' IS NOT NULL
+        UNION
+        SELECT DISTINCT provider, symbol, interval
+        FROM market_data_backfills
+      )
+      SELECT point.*
+      FROM targets
+      CROSS JOIN LATERAL (
+        SELECT *
+        FROM market_data_points
+        WHERE provider = targets.provider
+          AND symbol = targets.symbol
+          AND interval = targets.interval
+        ORDER BY timestamp DESC
+        LIMIT 1
+      ) AS point
+      ORDER BY point.symbol, point.interval, point.provider
+    `;
+    return rows.map(rowToMarketData);
+  }
+
+  async getLatestMarketDataPoint(provider: string, symbol: string, interval: string) {
+    const rows = await this.sql`
+      SELECT * FROM market_data_points
+      WHERE provider = ${provider}
+        AND symbol = ${symbol}
+        AND interval = ${interval}
+      ORDER BY timestamp DESC
+      LIMIT 1
+    `;
+    return rows[0] ? rowToMarketData(rows[0]) : null;
   }
 
   async marketDataSummary() {
@@ -404,8 +501,11 @@ export class Repository {
       )
       ON CONFLICT (provider, symbol, interval) DO UPDATE SET
         status = EXCLUDED.status,
-        start_time = COALESCE(EXCLUDED.start_time, market_data_backfills.start_time),
-        next_start_time = COALESCE(EXCLUDED.next_start_time, market_data_backfills.next_start_time),
+        start_time = COALESCE(market_data_backfills.start_time, EXCLUDED.start_time),
+        next_start_time = GREATEST(
+          COALESCE(EXCLUDED.next_start_time, market_data_backfills.next_start_time),
+          COALESCE(market_data_backfills.next_start_time, EXCLUDED.next_start_time)
+        ),
         latest_available_time = COALESCE(EXCLUDED.latest_available_time, market_data_backfills.latest_available_time),
         last_batch_at = COALESCE(EXCLUDED.last_batch_at, market_data_backfills.last_batch_at),
         last_fetched = EXCLUDED.last_fetched,
@@ -417,6 +517,14 @@ export class Repository {
       RETURNING *
     `;
     return rowToMarketBackfill(rows[0]);
+  }
+
+  async markMarketBackfillFailed(provider: string, symbol: string, interval: string, error: string) {
+    await this.sql`
+      UPDATE market_data_backfills
+      SET status = 'failed', last_error = ${error}, updated_at = NOW()
+      WHERE provider = ${provider} AND symbol = ${symbol} AND interval = ${interval}
+    `;
   }
 
   async markOldestMarketBackfillFailed(error: string) {

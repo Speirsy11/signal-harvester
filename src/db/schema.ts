@@ -97,5 +97,6 @@ export async function ensureSchema(sql: Sql) {
   await sql`CREATE INDEX IF NOT EXISTS idx_collection_jobs_topic ON collection_jobs(topic, source_kind)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_provider_credentials_provider ON provider_credentials(provider)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_market_data_symbol_time ON market_data_points(symbol, interval, timestamp DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_market_data_provider_symbol_interval_time ON market_data_points(provider, symbol, interval, timestamp DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_market_data_backfills_status ON market_data_backfills(status, updated_at DESC)`;
 }

@@ -6,6 +6,7 @@ import { z } from "zod";
 import { Repository } from "../db/repository";
 import { ensureSchema } from "../db/schema";
 import { JobRunner } from "../jobs/JobRunner";
+import { startJobScheduler } from "../jobs/JobScheduler";
 import { startMarketBackfill } from "../marketBackfill";
 import { createAdapters } from "../sources";
 import { html } from "../ui/html";
@@ -16,11 +17,15 @@ export async function buildServer(sql: Sql) {
   await repository.seedDefaults();
   const runner = new JobRunner(repository, createAdapters(repository));
   const backfill = startMarketBackfill(repository);
+  const scheduler = startJobScheduler(repository, runner);
   const app = Fastify({ logger: true });
-  app.addHook("onClose", async () => backfill.close());
+  app.addHook("onClose", async () => {
+    scheduler.close();
+    backfill.close();
+  });
   await app.register(cors, { origin: true });
 
-  app.get("/health", async () => ({ ok: true }));
+  app.get("/health", async () => ({ ok: true, scheduler: scheduler.getMetrics(), marketBackfill: backfill.getMetrics() }));
   app.get("/", async (_request, reply) => reply.type("text/html; charset=utf-8").send(html));
 
   app.get("/api/jobs", async () => repository.listJobs());
@@ -42,6 +47,11 @@ export async function buildServer(sql: Sql) {
   app.post("/api/jobs/:id/run", async (request) => {
     const params = z.object({ id: z.string() }).parse(request.params);
     return runner.run(params.id);
+  });
+
+  app.post("/api/jobs/run-due", async () => {
+    await scheduler.runOnce();
+    return { ok: true, scheduler: scheduler.getMetrics() };
   });
 
   app.get("/api/credentials", async () => repository.listCredentials());
@@ -124,8 +134,10 @@ export async function buildServer(sql: Sql) {
   });
 
   app.get("/api/market-data/summary", async () => repository.marketDataSummary());
+  app.get("/api/market-data/latest", async () => repository.listLatestMarketDataPerSymbol());
   app.get("/api/market-data/coverage", async () => repository.listMarketCoverage());
   app.get("/api/market-data/backfills", async () => repository.listMarketBackfills());
+  app.get("/api/market-data/backfills/metrics", async () => backfill.getMetrics());
 
   app.post("/api/market-data/backfills/run", async () => {
     await backfill.runOnce();

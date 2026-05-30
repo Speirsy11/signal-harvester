@@ -1,6 +1,7 @@
 import type { CollectionJob, HarvestResult, MarketDataInterval, MarketDataPoint } from "../types";
 import type { Repository } from "../db/repository";
 
+import { fetchBinanceKlines } from "./binance";
 import type { SourceAdapter } from "./SourceAdapter";
 
 interface FinancialApiConfig {
@@ -113,31 +114,14 @@ export class FinancialApiSource implements SourceAdapter {
     const points: MarketDataPoint[] = [];
 
     for (const symbol of symbols) {
-      const url = new URL("https://api.binance.com/api/v3/klines");
-      url.searchParams.set("symbol", symbol.replace("/", ""));
-      url.searchParams.set("interval", String(interval));
-      url.searchParams.set("limit", String(Math.min(Math.max(config.limit ?? 500, 1), 1000)));
-      if (config.startTime) url.searchParams.set("startTime", String(new Date(config.startTime).getTime()));
-      if (config.endTime) url.searchParams.set("endTime", String(new Date(config.endTime).getTime()));
-      const response = await fetch(url, { headers: { "user-agent": "SignalHarvester/0.1" } });
-      if (!response.ok) throw new Error(`Binance fetch failed for ${symbol}: ${response.status}`);
-      const rows = (await response.json()) as unknown[][];
-
-      for (const row of rows) {
-        points.push({
-          provider: "binance",
-          sourceName: "Binance",
-          symbol,
-          interval,
-          timestamp: new Date(Number(row[0])),
-          open: numberFrom(row[1]),
-          high: numberFrom(row[2]),
-          low: numberFrom(row[3]),
-          close: numberFrom(row[4]),
-          volume: numberFrom(row[5]),
-          raw: row,
-        });
-      }
+      const result = await fetchBinanceKlines({
+        symbol,
+        interval,
+        startTime: config.startTime ? new Date(config.startTime) : undefined,
+        endTime: config.endTime ? new Date(config.endTime) : undefined,
+        limit: config.limit,
+      });
+      points.push(...result.marketData);
     }
 
     return { marketData: points };

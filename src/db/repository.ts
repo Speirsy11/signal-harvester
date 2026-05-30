@@ -6,8 +6,12 @@ import {
   buildRollupPoint,
   closedRollupWindowsBetween,
   closedRollupWindowsForPoint,
+  isRollupMarketInterval,
+  nextRollupWindow,
   ROLLUP_MARKET_INTERVALS,
+  rollupWindowForTimestamp,
   SOURCE_MARKET_INTERVAL,
+  type RollupMarketInterval,
   type RollupWindow,
 } from "../marketRollups";
 import { scoreSentiment } from "../sentiment/lexicon";
@@ -17,6 +21,7 @@ import type {
   HarvestedDocument,
   MarketBackfillState,
   MarketDataPoint,
+  MarketRollupBackfillState,
   ProviderCredential,
   PublicProviderCredential,
   SourceKind,
@@ -126,6 +131,24 @@ function rowToMarketBackfill(row: any): MarketBackfillState {
     lastFetched: Number(row.last_fetched ?? 0),
     lastInserted: Number(row.last_inserted ?? 0),
     totalFetched: Number(row.total_fetched ?? 0),
+    totalInserted: Number(row.total_inserted ?? 0),
+    lastError: row.last_error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function rowToMarketRollupBackfill(row: any): MarketRollupBackfillState {
+  return {
+    provider: row.provider,
+    symbol: row.symbol,
+    interval: row.interval,
+    status: row.status,
+    startTime: row.start_time,
+    nextStartTime: row.next_start_time,
+    latestAvailableTime: row.latest_available_time,
+    lastBatchAt: row.last_batch_at,
+    lastInserted: Number(row.last_inserted ?? 0),
     totalInserted: Number(row.total_inserted ?? 0),
     lastError: row.last_error,
     createdAt: row.created_at,
@@ -459,6 +482,325 @@ export class Repository {
     }
 
     return this.insertMarketData(rollups);
+  }
+
+  async seedMarketRollupBackfillStates() {
+    const rows = await this.sql`
+      SELECT provider, symbol, MIN(timestamp) AS earliest_timestamp, MAX(timestamp) AS latest_timestamp
+      FROM market_data_points
+      WHERE interval = ${SOURCE_MARKET_INTERVAL}
+      GROUP BY provider, symbol
+      ORDER BY provider, symbol
+    `;
+
+    let seeded = 0;
+    for (const row of rows) {
+      const earliest = row.earliest_timestamp as Date | null;
+      const latest = row.latest_timestamp as Date | null;
+      if (!earliest || !latest) continue;
+
+      for (const interval of ROLLUP_MARKET_INTERVALS) {
+        const firstWindow = rollupWindowForTimestamp(interval, earliest);
+        const values = await this.sql`
+          INSERT INTO market_rollup_backfills (
+            provider, symbol, interval, status, start_time, next_start_time, latest_available_time
+          ) VALUES (
+            ${row.provider}, ${row.symbol}, ${interval}, 'idle', ${firstWindow.start}, ${firstWindow.start}, ${latest}
+          )
+          ON CONFLICT (provider, symbol, interval) DO UPDATE SET
+            latest_available_time = EXCLUDED.latest_available_time,
+            status = CASE
+              WHEN market_rollup_backfills.status = 'complete'
+               AND market_rollup_backfills.next_start_time < EXCLUDED.latest_available_time
+              THEN 'idle'
+              ELSE market_rollup_backfills.status
+            END,
+            updated_at = NOW()
+          RETURNING provider
+        `;
+        seeded += values.length;
+      }
+    }
+
+    return seeded;
+  }
+
+  async runMarketRollupBackfillBatches(options: { maxBatches?: number; batchWindows?: number } = {}) {
+    const maxBatches = Math.min(Math.max(options.maxBatches ?? 1, 1), 10_000);
+    const batchWindows = Math.min(Math.max(options.batchWindows ?? 1_000, 1), 10_000_000);
+    await this.seedMarketRollupBackfillStates();
+
+    let batchesRun = 0;
+    let rollupsStored = 0;
+    let completed = 0;
+    let failed = 0;
+
+    for (let index = 0; index < maxBatches; index += 1) {
+      const result = await this.runOneMarketRollupBackfillBatch(batchWindows);
+      if (!result) break;
+      batchesRun += 1;
+      rollupsStored += result.rollupsStored;
+      if (result.status === "complete") completed += 1;
+      if (result.status === "failed") failed += 1;
+    }
+
+    const summary = await this.marketRollupBackfillSummary();
+    return { batchesRun, rollupsStored, completed, failed, summary };
+  }
+
+  private async runOneMarketRollupBackfillBatch(batchWindows: number) {
+    const rows = await this.sql`
+      UPDATE market_rollup_backfills
+      SET status = 'running', updated_at = NOW(), last_error = NULL
+      WHERE (provider, symbol, interval) IN (
+        SELECT provider, symbol, interval
+        FROM market_rollup_backfills
+        WHERE status IN ('idle', 'failed', 'running')
+        ORDER BY updated_at ASC, provider, symbol, interval
+        LIMIT 1
+      )
+      RETURNING *
+    `;
+    const row = rows[0];
+    if (!row) return null;
+
+    const state = rowToMarketRollupBackfill(row);
+    if (!isRollupMarketInterval(state.interval)) {
+      await this.markMarketRollupBackfillFailed(state.provider, state.symbol, state.interval, "Unknown rollup interval");
+      return { status: "failed" as const, rollupsStored: 0 };
+    }
+
+    const nextStartTime = state.nextStartTime ?? state.startTime;
+    const latestAvailableTime = state.latestAvailableTime;
+    if (!nextStartTime || !latestAvailableTime) {
+      await this.markMarketRollupBackfillFailed(
+        state.provider,
+        state.symbol,
+        state.interval,
+        "Rollup backfill state is missing cursor or latest available time"
+      );
+      return { status: "failed" as const, rollupsStored: 0 };
+    }
+
+    const currentWindow = rollupWindowForTimestamp(state.interval, nextStartTime);
+    if (currentWindow.end > latestAvailableTime) {
+      await this.completeMarketRollupBackfill(state.provider, state.symbol, state.interval, latestAvailableTime);
+      return { status: "complete" as const, rollupsStored: 0 };
+    }
+
+    const endWindow = this.endRollupWindowForBatch(state.interval, currentWindow, latestAvailableTime, batchWindows);
+
+    const inserted = await this.insertRollupsForRange(
+      state.provider,
+      state.symbol,
+      state.interval,
+      currentWindow.start,
+      endWindow.start
+    );
+    const status = endWindow.end > latestAvailableTime ? "complete" : "idle";
+    await this.upsertMarketRollupBackfillState({
+      provider: state.provider,
+      symbol: state.symbol,
+      interval: state.interval,
+      status,
+      nextStartTime: endWindow.start,
+      latestAvailableTime,
+      lastInserted: inserted,
+      totalInsertedDelta: inserted,
+      lastError: null,
+    });
+
+    return { status, rollupsStored: inserted };
+  }
+
+  private endRollupWindowForBatch(
+    interval: RollupMarketInterval,
+    currentWindow: RollupWindow,
+    latestAvailableTime: Date,
+    batchWindows: number
+  ) {
+    let endWindow = currentWindow;
+    let processedWindows = 0;
+    while (processedWindows < batchWindows && endWindow.end <= latestAvailableTime) {
+      endWindow = nextRollupWindow(interval, endWindow);
+      processedWindows += 1;
+    }
+    return endWindow;
+  }
+
+  private async insertRollupsForRange(
+    provider: string,
+    symbol: string,
+    interval: RollupMarketInterval,
+    start: Date,
+    end: Date
+  ) {
+    const expectedPoints = rollupWindowForTimestamp(interval, start).expectedPoints;
+    const bucketExpression =
+      interval === "1W"
+        ? this.sql`date_trunc('week', timestamp)`
+        : interval === "1M"
+          ? this.sql`date_trunc('month', timestamp)`
+          : this.sql`date_bin(${expectedPoints * 60_000} * interval '1 millisecond', timestamp, TIMESTAMPTZ '1970-01-01')`;
+    const expectedExpression =
+      interval === "1M"
+        ? this.sql`(EXTRACT(EPOCH FROM ((bucket + interval '1 month') - bucket)) / 60)::int`
+        : this.sql`${expectedPoints}::int`;
+    const bucketEndExpression =
+      interval === "1M"
+        ? this.sql`timestamp + interval '1 month'`
+        : this.sql`timestamp + ${expectedPoints * 60_000} * interval '1 millisecond'`;
+
+    const rows = await this.sql`
+      WITH bucketed AS (
+        SELECT
+          provider,
+          source_name,
+          symbol,
+          ${bucketExpression} AS bucket,
+          timestamp,
+          open,
+          high,
+          low,
+          close,
+          volume
+        FROM market_data_points
+        WHERE provider = ${provider}
+          AND symbol = ${symbol}
+          AND interval = ${SOURCE_MARKET_INTERVAL}::text
+          AND timestamp >= ${start}
+          AND timestamp < ${end}
+      ),
+      rolled AS (
+        SELECT
+          provider,
+          symbol,
+          ${interval}::text AS interval,
+          bucket AS timestamp,
+          (array_agg(source_name ORDER BY timestamp ASC))[1] AS source_name,
+          (array_agg(open ORDER BY timestamp ASC))[1] AS open,
+          MAX(high) AS high,
+          MIN(low) AS low,
+          (array_agg(close ORDER BY timestamp DESC))[1] AS close,
+          CASE WHEN COUNT(volume) = 0 THEN NULL ELSE SUM(COALESCE(volume, 0)) END AS volume,
+          COUNT(*)::int AS source_points,
+          ${expectedExpression} AS expected_points
+        FROM bucketed
+        GROUP BY provider, symbol, bucket
+      )
+      INSERT INTO market_data_points (
+        provider, source_name, symbol, interval, timestamp, open, high, low, close, volume, raw
+      )
+      SELECT
+        provider,
+        source_name,
+        symbol,
+        interval,
+        timestamp,
+        open,
+        high,
+        low,
+        close,
+        volume,
+        jsonb_build_object(
+          'derivedFromInterval', ${SOURCE_MARKET_INTERVAL}::text,
+          'sourcePoints', source_points,
+          'bucketStart', timestamp,
+          'bucketEnd', ${bucketEndExpression},
+          'rollupInterval', ${interval}::text
+        )
+      FROM rolled
+      WHERE source_points = expected_points
+      ON CONFLICT (provider, symbol, interval, timestamp) DO UPDATE SET
+        source_name = EXCLUDED.source_name,
+        open = EXCLUDED.open,
+        high = EXCLUDED.high,
+        low = EXCLUDED.low,
+        close = EXCLUDED.close,
+        volume = EXCLUDED.volume,
+        raw = EXCLUDED.raw,
+        collected_at = NOW()
+      RETURNING id
+    `;
+
+    return rows.length;
+  }
+
+  private async upsertMarketRollupBackfillState(input: {
+    provider: string;
+    symbol: string;
+    interval: string;
+    status: MarketRollupBackfillState["status"];
+    nextStartTime?: Date | null;
+    latestAvailableTime?: Date | null;
+    lastInserted?: number;
+    totalInsertedDelta?: number;
+    lastError?: string | null;
+  }) {
+    const rows = await this.sql`
+      INSERT INTO market_rollup_backfills (
+        provider, symbol, interval, status, next_start_time, latest_available_time,
+        last_batch_at, last_inserted, total_inserted, last_error
+      ) VALUES (
+        ${input.provider}, ${input.symbol}, ${input.interval}, ${input.status},
+        ${input.nextStartTime ?? null}, ${input.latestAvailableTime ?? null},
+        NOW(), ${input.lastInserted ?? 0}, ${input.totalInsertedDelta ?? 0}, ${input.lastError ?? null}
+      )
+      ON CONFLICT (provider, symbol, interval) DO UPDATE SET
+        status = EXCLUDED.status,
+        next_start_time = COALESCE(EXCLUDED.next_start_time, market_rollup_backfills.next_start_time),
+        latest_available_time = COALESCE(EXCLUDED.latest_available_time, market_rollup_backfills.latest_available_time),
+        last_batch_at = EXCLUDED.last_batch_at,
+        last_inserted = EXCLUDED.last_inserted,
+        total_inserted = market_rollup_backfills.total_inserted + EXCLUDED.total_inserted,
+        last_error = EXCLUDED.last_error,
+        updated_at = NOW()
+      RETURNING *
+    `;
+    return rowToMarketRollupBackfill(rows[0]);
+  }
+
+  private async completeMarketRollupBackfill(provider: string, symbol: string, interval: string, latestAvailableTime: Date) {
+    await this.sql`
+      UPDATE market_rollup_backfills
+      SET status = 'complete',
+          latest_available_time = ${latestAvailableTime},
+          last_batch_at = NOW(),
+          last_inserted = 0,
+          last_error = NULL,
+          updated_at = NOW()
+      WHERE provider = ${provider}
+        AND symbol = ${symbol}
+        AND interval = ${interval}
+    `;
+  }
+
+  private async markMarketRollupBackfillFailed(provider: string, symbol: string, interval: string, error: string) {
+    await this.sql`
+      UPDATE market_rollup_backfills
+      SET status = 'failed',
+          last_error = ${error},
+          updated_at = NOW()
+      WHERE provider = ${provider}
+        AND symbol = ${symbol}
+        AND interval = ${interval}
+    `;
+  }
+
+  async listMarketRollupBackfills() {
+    await this.seedMarketRollupBackfillStates();
+    const rows = await this.sql`SELECT * FROM market_rollup_backfills ORDER BY symbol, interval, provider`;
+    return rows.map(rowToMarketRollupBackfill);
+  }
+
+  private async marketRollupBackfillSummary() {
+    const rows = await this.sql`
+      SELECT status, COUNT(*)::int AS count
+      FROM market_rollup_backfills
+      GROUP BY status
+      ORDER BY status
+    `;
+    return rows;
   }
 
   async listDocuments(options: { topic?: string; limit?: number }) {

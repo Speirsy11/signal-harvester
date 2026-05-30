@@ -93,6 +93,22 @@ export interface MarketBackfillState {
   updatedAt: Date;
 }
 
+export interface MarketRollupBackfillState {
+  provider: string;
+  symbol: string;
+  interval: MarketDataInterval | string;
+  status: "idle" | "running" | "complete" | "failed";
+  startTime: Date | null;
+  nextStartTime: Date | null;
+  latestAvailableTime: Date | null;
+  lastBatchAt: Date | null;
+  lastInserted: number;
+  totalInserted: number;
+  lastError: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface HarvestResult {
   documents?: HarvestedDocument[];
   marketData?: MarketDataPoint[];

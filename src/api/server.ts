@@ -138,10 +138,25 @@ export async function buildServer(sql: Sql) {
   app.get("/api/market-data/coverage", async () => repository.listMarketCoverage());
   app.get("/api/market-data/backfills", async () => repository.listMarketBackfills());
   app.get("/api/market-data/backfills/metrics", async () => backfill.getMetrics());
+  app.get("/api/market-data/rollups/backfills", async () => repository.listMarketRollupBackfills());
 
   app.post("/api/market-data/rollups/run", async (request) => {
     const body = z.object({ lookbackDays: z.number().int().positive().optional() }).optional().parse(request.body);
     return repository.refreshClosedMarketRollups({ lookbackDays: body?.lookbackDays });
+  });
+
+  app.post("/api/market-data/rollups/backfills/run", async (request) => {
+    const body = z
+      .object({
+        maxBatches: z.number().int().positive().optional(),
+        batchWindows: z.number().int().positive().optional(),
+      })
+      .optional()
+      .parse(request.body);
+    return repository.runMarketRollupBackfillBatches({
+      maxBatches: body?.maxBatches,
+      batchWindows: body?.batchWindows,
+    });
   });
 
   app.post("/api/market-data/backfills/run", async () => {

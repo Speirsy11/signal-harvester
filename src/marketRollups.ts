@@ -21,6 +21,10 @@ const FIXED_INTERVAL_MINUTES: Partial<Record<RollupMarketInterval, number>> = {
   "1d": 1_440,
 };
 
+export function isRollupMarketInterval(interval: string): interval is RollupMarketInterval {
+  return (ROLLUP_MARKET_INTERVALS as readonly string[]).includes(interval);
+}
+
 function utcDate(year: number, month: number, day: number) {
   return new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
 }
@@ -82,6 +86,12 @@ export function previousRollupWindow(interval: RollupMarketInterval, window: Rol
 
 export function nextRollupWindow(interval: RollupMarketInterval, window: RollupWindow): RollupWindow {
   return rollupWindowForTimestamp(interval, window.end);
+}
+
+export function advanceRollupWindows(interval: RollupMarketInterval, window: RollupWindow, count: number) {
+  let advanced = window;
+  for (let index = 0; index < count; index += 1) advanced = nextRollupWindow(interval, advanced);
+  return advanced;
 }
 
 export function closedRollupWindowsBetween(interval: RollupMarketInterval, from: Date, to: Date) {

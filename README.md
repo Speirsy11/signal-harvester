@@ -45,12 +45,26 @@ Supported now:
 
 Signal Harvester collects `1m` candles as source data, then derives closed higher-timeframe candles as new complete buckets become available: `5m`, `15m`, `1h`, `4h`, `1d`, `1W`, and `1M`. For example, when the first candle of a new hour arrives, the previous hour is rolled up from its 60 complete `1m` candles.
 
-To bootstrap recent derived candles from `1m` data already stored before rollups were enabled:
+To refresh recent derived candles from `1m` data, for example after manually importing a recent slice:
 
 ```bash
 curl -X POST http://localhost:3010/api/market-data/rollups/run \
   -H 'content-type: application/json' \
   -d '{"lookbackDays":45}'
+```
+
+To convert the complete stored `1m` history into every derived interval, run the persisted rollup backfill. It tracks one cursor per provider/symbol/interval and can be safely rerun; it only writes buckets where every source `1m` candle is present.
+
+```bash
+curl -X POST http://localhost:3010/api/market-data/rollups/backfills/run \
+  -H 'content-type: application/json' \
+  -d '{"maxBatches":500,"batchWindows":10000000}'
+```
+
+Inspect progress with:
+
+```bash
+curl http://localhost:3010/api/market-data/rollups/backfills
 ```
 
 For Binance `1m` jobs, the app also runs a throttled historical backfill loop. Live jobs keep the newest minute current, while backfill batches walk from Binance's first available 1m candle toward now. Tune it with:
@@ -105,6 +119,8 @@ curl -X POST http://localhost:3010/api/jobs/btc-alpha-vantage-1m/run
 - `GET /api/market-data/backfills`
 - `POST /api/market-data/backfills/run`
 - `POST /api/market-data/rollups/run`
+- `GET /api/market-data/rollups/backfills`
+- `POST /api/market-data/rollups/backfills/run`
 - `GET /api/sentiment/summary?topic=BTC&windowHours=24`
 - `GET /api/context/events?topic=BTC`
 
